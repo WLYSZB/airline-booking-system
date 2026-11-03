@@ -41,10 +41,16 @@ public class AirlineController {
             @RequestParam(defaultValue = "1") int passengers
     ) {
         requireAirline(airlineCode);
-        if (passengers < 1) {
-            throw new AirlineServiceException(HttpStatus.BAD_REQUEST, "INVALID_PASSENGERS", "乘客人数必须大于 0");
+        if (passengers < 1 || passengers > 6) {
+            throw new AirlineServiceException(HttpStatus.BAD_REQUEST, "INVALID_PASSENGERS", "乘客人数必须在 1 到 6 之间");
         }
         return repository.search(origin.toUpperCase(), destination.toUpperCase(), date, passengers);
+    }
+
+    @GetMapping("/flights/{flightInstanceId}")
+    public FlightOffer flight(@PathVariable String airlineCode, @PathVariable String flightInstanceId) {
+        requireAirline(airlineCode);
+        return repository.flight(flightInstanceId);
     }
 
     @PostMapping("/holds")

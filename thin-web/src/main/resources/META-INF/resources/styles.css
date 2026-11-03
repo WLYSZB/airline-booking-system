@@ -174,16 +174,18 @@ input:focus, select:focus { border-color: var(--primary); box-shadow: 0 0 0 4px 
 .receipt-passengers { display: grid; gap: 8px; margin-bottom: 14px; }
 .receipt-legs { display: grid; gap: 8px; }
 
-dialog { width: min(720px, calc(100vw - 30px)); border: 0; border-radius: 24px; padding: 0; box-shadow: 0 30px 100px rgba(12,32,51,.28); }
+dialog { width: min(720px, calc(100vw - 30px)); max-height: calc(100vh - 32px); overflow-y: auto; border: 0; border-radius: 24px; padding: 0; box-shadow: 0 30px 100px rgba(12,32,51,.28); }
 dialog::backdrop { background: rgba(10,30,42,.48); backdrop-filter: blur(3px); }
 #booking-form { padding: 26px; }
 .dialog-heading { display: flex; justify-content: space-between; align-items: start; gap: 20px; }
 .dialog-heading h3 { margin: 0; font-size: 22px; }
 .icon-button { width: 38px; height: 38px; border: 0; border-radius: 50%; background: #eef4f8; color: var(--muted); font-size: 24px; line-height: 1; }
-.selected-trip { margin: 18px 0; padding: 14px; border-radius: 14px; background: #eef6f9; color: var(--primary-dark); font-weight: 700; }
+.selected-trip { margin: 18px 0; padding: 14px; border-radius: 14px; background: #eef6f9; color: var(--primary-dark); font-weight: 700; overflow-wrap: anywhere; }
+.form-error { margin: 0 0 14px; padding: 10px 12px; border-radius: 10px; color: #8d2432; background: #fcebed; font-size: 13px; font-weight: 700; }
 .field-row { margin-bottom: 16px; }
 .passenger-fields { display: grid; gap: 12px; }
 .passenger-row { display: grid; grid-template-columns: 56px 1fr 1fr 165px; gap: 12px; align-items: end; padding: 12px; border: 1px solid var(--line); border-radius: 14px; }
+.passenger-row label, .passenger-row input, .passenger-row select { min-width: 0; }
 .passenger-index { align-self: center; color: var(--muted); font-weight: 800; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 22px; }
 footer { max-width: 1180px; margin: 0 auto; padding: 0 24px 40px; display: flex; justify-content: space-between; gap: 20px; color: #7b8a99; font-size: 12px; }
@@ -193,6 +195,10 @@ footer { max-width: 1180px; margin: 0 auto; padding: 0 24px 40px; display: flex;
   .search-form { grid-template-columns: repeat(2, 1fr); }
   .airline-filter { grid-column: 1 / -1; }
   .arch-badge { display: none; }
+}
+@media (max-width: 760px) {
+  .passenger-row { grid-template-columns: 56px 1fr 1fr; }
+  .passenger-row label:last-child { grid-column: 2 / -1; }
 }
 @media (max-width: 620px) {
   .topbar { padding-top: 18px; }
@@ -204,6 +210,16 @@ footer { max-width: 1180px; margin: 0 auto; padding: 0 24px 40px; display: flex;
   .trip-side { justify-items: start; }
   .receipt-actions { grid-template-columns: 1fr; }
   .passenger-row { grid-template-columns: 1fr; }
+  .passenger-row label:last-child { grid-column: auto; }
   .receipt-grid { grid-template-columns: 1fr; }
   footer { flex-direction: column; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

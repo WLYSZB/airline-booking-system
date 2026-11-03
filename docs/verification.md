@@ -1,8 +1,10 @@
 # 实现验证记录
 
-日期：2026-11-01  
-环境：Windows 11，JDK 25.0.2，Maven 3.9.6  
-运行模式：真实 MySQL + Oracle 数据库
+日期：2026-11-01（最后更新：2026-11-03）
+
+环境：Windows 11，JDK 25，Maven 3.9.6
+
+运行模式：真实 MySQL + Oracle；2026-11-03 复测时 Oracle 监听器未启动，C 航司临时使用 H2。
 
 ## 1. 数据库环境
 
@@ -23,13 +25,15 @@
 mvn -f pom.xml test
 ```
 
-结果：`BUILD SUCCESS`，5 个领域规则测试全部通过：
+结果：`BUILD SUCCESS`，9 个领域规则测试全部通过：
 
 - 直达与一跳联程组合
 - `ConnectionTime` 小于最小值时拒绝
 - `ConnectionTime` 刚好等于最小值时允许
 - 跨航司不打折、人数乘票价、余座不足过滤
 - 按首段出发时间最早排序
+- 预订前校验权威航班、乘客人数、航段连续性和最短中转
+- 拒绝人数不一致、非连续航段和过短中转
 
 ## 3. V1 Thin Web 全流程（真实 MySQL + Oracle）
 
@@ -42,9 +46,9 @@ python3 scripts/smoke_test.py
 ```text
 跨航司行程: BB2102(WUH-CAN) -> AA1104(CAN-PEK)
 预订前余座: [4, 6]
-预订成功: BK3FD0E4C5DD 1700.0 CONFIRMED
-幂等重试通过: BK3FD0E4C5DD
-收据查询通过: BK3FD0E4C5DD 乘客偏好: ['AISLE', 'WINDOW']
+预订成功: BK1FDBA3665F 1700.0 CONFIRMED
+幂等重试通过: BK1FDBA3665F
+收据查询通过: BK1FDBA3665F 乘客偏好: ['AISLE', 'WINDOW']
 扣座验证通过: [2, 4]
 取消成功: CANCELLED 航段状态: ['CANCELLED', 'CANCELLED']
 重复取消幂等通过
@@ -66,8 +70,8 @@ mvn -f pom.xml -pl thick-client exec:java \
 
 ```text
 V2 client trip: BB2102 -> AA1104
-V2 registered: BK89E9DD04CF CONFIRMED 1700.00 seats=[WINDOW, AISLE]
-V2 cancelled: BK89E9DD04CF CANCELLED
+V2 registered: BKEB41887C6C CONFIRMED 1700.00 seats=[WINDOW, AISLE]
+V2 cancelled: BKEB41887C6C CANCELLED
 THICK_CLIENT_SMOKE_PASS
 ```
 
@@ -170,9 +174,23 @@ C C3101  武汉 WUH 18:30 → 北京 PEK 20:35
 
 ![Thin Web Search Results](thin-results.png)
 
-## 10. 验证边界
+## 10. 2026-11-03 修复回归
+
+- `mvn test`：9/9 通过。
+- V1：`BK1FDBA3665F`，2 人 `1700.00`，取消后座位回补。
+- V2：`BKEB41887C6C`，`WINDOW/AISLE` 两种偏好被中央还原。
+- 幂等：同 key 重试返回同一收据；同 key 改内容返回 `409 IDEMPOTENCY_CONFLICT`；并发同 key 一条成功、一条返回 `IDEMPOTENCY_IN_PROGRESS`。
+- 预订校验：伪造乘客人数返回 `409 BOOKING_FAILED`，不会进入航司预占。
+- 过期预占：0 分钟预占实例确认返回 `409 HOLD_EXPIRED`。
+- 取消重试：人为制造 `AIRLINE_NOT_CANCELLED` 后中央进入 `CANCEL_PENDING`，30 秒后台任务收口为 `CANCELLED`。
+- 前端：乘客人数改变后拒绝使用旧报价；不勾选任何航司时提示至少选择一家。
+- 本轮 Oracle 监听器未启动（`ORA-12541`），航司 C 使用 H2 完成回归；Oracle 代码路径此前已验证，当前环境恢复后可重复相同脚本。
+
+## 11. 验证边界
 
 1. Oracle 表在本轮之前已经存在，未从空 Oracle schema 重新执行 DDL；已通过应用读写验证。
 2. 未覆盖真实支付、出票、退票费用、代码共享、第三方航司接口、用户认证与授权。
 3. 演示数据固定为 `2026-11-15`，其他日期返回空结果。
 4. Swing 界面已编译，V2 业务通过无界面 smoke 类验证；尚未做 UI 自动化。
+5. 预订失败补偿只有 3 次即时重试，没有持久化补偿队列。
+6. 幂等占位按单实例设计，多实例部署仍需数据库行锁或分布式锁。

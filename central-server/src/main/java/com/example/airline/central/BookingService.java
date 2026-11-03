@@ -18,11 +18,18 @@ import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HexFormat;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -33,38 +40,77 @@ public class BookingService {
     private final BookingCoordinator coordinator;
     private final BookingRepository repository;
     private final AirlineGateway gateway;
+    private final IdempotencyRepository idempotencyRepository;
+    private final BookingPersistenceService persistenceService;
 
     public BookingService(
             AppProperties properties,
             BookingCoordinator coordinator,
             BookingRepository repository,
-            AirlineGateway gateway
+            AirlineGateway gateway,
+            IdempotencyRepository idempotencyRepository,
+            BookingPersistenceService persistenceService
     ) {
         this.properties = properties;
         this.coordinator = coordinator;
         this.repository = repository;
         this.gateway = gateway;
+        this.idempotencyRepository = idempotencyRepository;
+        this.persistenceService = persistenceService;
     }
 
     public Receipt book(BookingRequest request) {
         requireIdempotency(request == null ? null : request.idempotencyKey());
-        return repository.findByIdempotencyKey(request.idempotencyKey())
-                .orElseGet(() -> {
-                    Receipt receipt;
-                    try {
-                        receipt = coordinator.coordinate(request, properties.airlines());
-                    } catch (BookingException exception) {
-                        throw new CentralServiceException(HttpStatus.CONFLICT, "BOOKING_FAILED", exception.getMessage());
-                    }
-                    try {
-                        repository.save(receipt, request.idempotencyKey());
-                        return receipt;
-                    } catch (RuntimeException exception) {
-                        coordinator.cancel(receipt.bookingReference(), receipt.legs(), properties.airlines());
-                        throw new CentralServiceException(HttpStatus.INTERNAL_SERVER_ERROR,
-                                "RECEIPT_PERSIST_FAILED", "收据保存失败，已尝试释放航段");
-                    }
-                });
+        if (request.trip() == null || request.trip().legs() == null || request.trip().legs().isEmpty()
+                || request.passengers() == null) {
+            throw new CentralServiceException(HttpStatus.BAD_REQUEST, "INVALID_BOOKING", "行程和乘客不能为空");
+        }
+        String key = request.idempotencyKey();
+        String fingerprint = fingerprint(request);
+        IdempotencyRepository.ClaimResult claim = idempotencyRepository.claim(key, fingerprint);
+        if (claim.status() == IdempotencyRepository.ClaimStatus.COMPLETED) {
+            return repository.find(claim.bookingReference()).orElseThrow(() -> new CentralServiceException(
+                    HttpStatus.CONFLICT, "IDEMPOTENCY_INCONSISTENT", "幂等请求已完成，但收据不存在"));
+        }
+        if (claim.status() == IdempotencyRepository.ClaimStatus.CONFLICT) {
+            throw new CentralServiceException(HttpStatus.CONFLICT, "IDEMPOTENCY_CONFLICT",
+                    "同一 idempotencyKey 对应了不同的预订内容");
+        }
+        if (claim.status() == IdempotencyRepository.ClaimStatus.BUSY) {
+            throw new CentralServiceException(HttpStatus.CONFLICT, "IDEMPOTENCY_IN_PROGRESS",
+                    "相同请求正在处理中，请稍后重试");
+        }
+
+        try {
+            Optional<Receipt> legacy = repository.findByIdempotencyKey(key);
+            if (legacy.isPresent()) {
+                Receipt existing = legacy.get();
+                idempotencyRepository.complete(key, fingerprint, existing.bookingReference());
+                return existing;
+            }
+
+            Receipt receipt;
+            try {
+                receipt = coordinator.coordinate(
+                        request,
+                        properties.airlines(),
+                        connectionMinutes(),
+                        idempotencyBookingReference(key)
+                );
+            } catch (BookingException exception) {
+                throw new CentralServiceException(HttpStatus.CONFLICT, "BOOKING_FAILED", exception.getMessage());
+            }
+            try {
+                return persistenceService.persist(receipt, key, fingerprint);
+            } catch (RuntimeException exception) {
+                coordinator.cancel(receipt.bookingReference(), receipt.legs(), properties.airlines());
+                throw new CentralServiceException(HttpStatus.INTERNAL_SERVER_ERROR,
+                        "RECEIPT_PERSIST_FAILED", "收据保存失败，已尝试释放航段");
+            }
+        } catch (RuntimeException exception) {
+            idempotencyRepository.fail(key, fingerprint);
+            throw exception;
+        }
     }
 
     public Receipt get(String bookingReference) {
@@ -175,12 +221,37 @@ public class BookingService {
             AirlineInfo airline = airline(airlineCode);
             ReservationStatus status = gateway.reservation(airline, bookingReference);
             if (!"CANCELLED".equals(status.status()) && !"NOT_FOUND".equals(status.status())) {
+                repository.updateStatus(bookingReference, BookingStatus.CANCEL_PENDING,
+                        "厚客户端取消未完成，等待后台重试：" + airlineCode);
                 throw new CentralServiceException(HttpStatus.CONFLICT, "AIRLINE_NOT_CANCELLED",
                         airlineCode + " 仍未取消，当前状态：" + status.status());
             }
         }
         repository.updateStatus(bookingReference, BookingStatus.CANCELLED, "厚客户端取消已登记");
         return get(bookingReference);
+    }
+
+    public int retryPendingCancellations() {
+        int recovered = 0;
+        for (String bookingReference : repository.findReferencesByStatus(BookingStatus.CANCEL_PENDING)) {
+            Receipt existing = get(bookingReference);
+            List<String> failures = coordinator.cancel(
+                    bookingReference, existing.legs(), properties.airlines());
+            if (failures.isEmpty()) {
+                repository.updateStatus(bookingReference, BookingStatus.CANCELLED,
+                        "后台重试取消成功");
+                recovered++;
+            } else {
+                repository.updateStatus(bookingReference, BookingStatus.CANCEL_PENDING,
+                        "后台重试仍失败：" + String.join("; ", failures));
+            }
+        }
+        return recovered;
+    }
+
+    private Map<String, Integer> connectionMinutes() {
+        return properties.airports().stream()
+                .collect(Collectors.toMap(airport -> airport.code(), airport -> airport.minConnectionMinutes()));
     }
 
     private Set<String> distinctAirlines(List<BookedLeg> legs) {
@@ -194,6 +265,41 @@ public class BookingService {
                 .findFirst()
                 .orElseThrow(() -> new CentralServiceException(
                         HttpStatus.BAD_REQUEST, "AIRLINE_NOT_CONFIGURED", "未配置航司：" + code));
+    }
+
+    private String idempotencyBookingReference(String key) {
+        try {
+            byte[] hash = MessageDigest.getInstance("SHA-256")
+                    .digest(key.getBytes(StandardCharsets.UTF_8));
+            return "BK" + HexFormat.of().formatHex(hash).substring(0, 10).toUpperCase(Locale.ROOT);
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 unavailable", exception);
+        }
+    }
+
+    private String fingerprint(BookingRequest request) {
+        StringBuilder canonical = new StringBuilder();
+        for (var leg : request.trip().legs()) {
+            canonical.append(leg.flightInstanceId()).append('|')
+                    .append(leg.airlineCode()).append('|')
+                    .append(leg.origin()).append('|')
+                    .append(leg.destination()).append('|')
+                    .append(leg.departureTime()).append('|')
+                    .append(leg.arrivalTime()).append('|')
+                    .append(leg.fare()).append('\n');
+        }
+        for (var passenger : request.passengers()) {
+            canonical.append(passenger.name()).append('|')
+                    .append(passenger.passportNumber()).append('|')
+                    .append(passenger.seatPreference()).append('\n');
+        }
+        try {
+            byte[] hash = MessageDigest.getInstance("SHA-256")
+                    .digest(canonical.toString().getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(hash);
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("SHA-256 unavailable", exception);
+        }
     }
 
     private void requireIdempotency(String key) {

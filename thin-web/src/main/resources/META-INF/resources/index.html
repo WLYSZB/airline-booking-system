@@ -118,16 +118,17 @@
   </section>
 </main>
 
-<dialog id="booking-dialog">
+<dialog id="booking-dialog" aria-labelledby="booking-dialog-title">
   <form method="dialog" id="booking-form">
     <div class="dialog-heading">
       <div>
         <p class="eyebrow">BOOK</p>
-        <h3>填写乘客与个人座位偏好</h3>
+        <h3 id="booking-dialog-title">填写乘客与个人座位偏好</h3>
       </div>
       <button type="button" class="icon-button" id="close-dialog" aria-label="关闭">×</button>
     </div>
     <div id="selected-trip" class="selected-trip"></div>
+    <p id="booking-error" class="form-error hidden" role="alert"></p>
     <div id="passenger-fields" class="passenger-fields"></div>
     <div class="dialog-actions">
       <button type="button" class="secondary-action" id="cancel-dialog">取消</button>

@@ -13,12 +13,15 @@ import com.example.airline.model.SeatPreference;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
@@ -30,23 +33,43 @@ import java.util.stream.Collectors;
  */
 public class BookingCoordinator {
 
+    private static final int MAX_PASSENGERS = 6;
+    private static final int MAX_LEGS = 2;
+
     private final AirlineGateway gateway;
 
     public BookingCoordinator(AirlineGateway gateway) {
         this.gateway = gateway;
     }
 
-    public Receipt coordinate(BookingRequest request, List<AirlineInfo> airlines) {
+    public Receipt coordinate(
+            BookingRequest request,
+            List<AirlineInfo> airlines,
+            Map<String, Integer> connectionMinutes
+    ) {
+        return coordinate(request, airlines, connectionMinutes, newBookingReference());
+    }
+
+    public Receipt coordinate(
+            BookingRequest request,
+            List<AirlineInfo> airlines,
+            Map<String, Integer> connectionMinutes,
+            String bookingReference
+    ) {
         validate(request);
+        if (blank(bookingReference)) {
+            throw new BookingException("预订编号不能为空");
+        }
         Map<String, AirlineInfo> registry = airlines.stream()
                 .collect(Collectors.toMap(AirlineInfo::code, Function.identity()));
-        String bookingReference = newBookingReference();
+        List<FlightOffer> flights = authoritativeFlights(request, registry);
+        validateItinerary(flights, request.passengers().size(), connectionMinutes);
         List<BookedLeg> bookedLegs = new ArrayList<>();
         List<HoldContext> createdHolds = new ArrayList<>();
 
         try {
-            for (int index = 0; index < request.trip().legs().size(); index++) {
-                FlightOffer flight = request.trip().legs().get(index);
+            for (int index = 0; index < flights.size(); index++) {
+                FlightOffer flight = flights.get(index);
                 AirlineInfo airline = requireAirline(registry, flight.airlineCode());
                 String legKey = request.idempotencyKey() == null || request.idempotencyKey().isBlank()
                         ? UUID.randomUUID().toString()
@@ -84,12 +107,15 @@ public class BookingCoordinator {
                 ));
             }
         } catch (RuntimeException exception) {
-            compensate(createdHolds);
-            throw new BookingException("预订失败，已释放本次已预占航段：" + exception.getMessage(), exception);
+            List<String> compensationFailures = compensate(createdHolds);
+            String suffix = compensationFailures.isEmpty()
+                    ? "已释放本次已预占航段"
+                    : "以下预占释放失败，需要人工或后台补偿：" + String.join("; ", compensationFailures);
+            throw new BookingException("预订失败，" + suffix + "；原因：" + exception.getMessage(), exception);
         }
 
         boolean sameAirline = bookedLegs.stream().map(BookedLeg::airlineCode).distinct().count() == 1;
-        int discount = sameAirline ? registry.get(bookedLegs.get(0).airlineCode()).ownDiscountPercent() : 0;
+        int discount = sameAirline ? flights.get(0).ownDiscountPercent() : 0;
         BigDecimal total = calculateTotal(bookedLegs, discount, request.passengers().size());
         String note = sameAirline
                 ? "同一航司 OwnDiscount " + discount + "%"
@@ -132,14 +158,88 @@ public class BookingCoordinator {
         if (request == null || request.trip() == null || request.trip().legs().isEmpty()) {
             throw new BookingException("行程不能为空");
         }
-        if (request.passengers() == null || request.passengers().isEmpty()) {
-            throw new BookingException("至少需要一名乘客");
+        if (request.trip().legs().size() > MAX_LEGS) {
+            throw new BookingException("一次预订最多允许 " + MAX_LEGS + " 个航段");
+        }
+        if (request.passengers() == null || request.passengers().isEmpty()
+                || request.passengers().size() > MAX_PASSENGERS) {
+            throw new BookingException("乘客人数必须在 1 到 " + MAX_PASSENGERS + " 人之间");
+        }
+        if (request.trip().passengers() != request.passengers().size()) {
+            throw new BookingException("行程人数与乘客列表不一致，请重新查询");
         }
         boolean invalidPassenger = request.passengers().stream()
                 .anyMatch(p -> p == null || blank(p.name()) || blank(p.passportNumber())
                         || p.seatPreference() == null || p.seatPreference() == SeatPreference.MIXED);
         if (invalidPassenger) {
             throw new BookingException("乘客姓名、护照号和各自座位偏好不能为空");
+        }
+    }
+
+    private List<FlightOffer> authoritativeFlights(
+            BookingRequest request,
+            Map<String, AirlineInfo> registry
+    ) {
+        List<FlightOffer> flights = new ArrayList<>();
+        Set<String> flightIds = new HashSet<>();
+        for (FlightOffer requested : request.trip().legs()) {
+            if (requested == null || blank(requested.flightInstanceId())) {
+                throw new BookingException("航段缺少航班实例编号");
+            }
+            if (!flightIds.add(requested.flightInstanceId())) {
+                throw new BookingException("同一航班不能重复预订");
+            }
+            AirlineInfo airline = requireAirline(registry, requested.airlineCode());
+            FlightOffer actual = gateway.flight(airline, requested.flightInstanceId());
+            if (!Objects.equals(actual.airlineCode(), requested.airlineCode())) {
+                throw new BookingException("航班不属于指定航司：" + requested.flightInstanceId());
+            }
+            if (!Objects.equals(actual.origin(), requested.origin())
+                    || !Objects.equals(actual.destination(), requested.destination())
+                    || !Objects.equals(actual.departureTime(), requested.departureTime())
+                    || !Objects.equals(actual.arrivalTime(), requested.arrivalTime())
+                    || actual.fare().compareTo(requested.fare()) != 0) {
+                throw new BookingException("航班信息已更新，请重新查询后预订：" + requested.flightInstanceId());
+            }
+            if (actual.availableSeats() < request.passengers().size()) {
+                throw new BookingException("余座不足：" + actual.flightNumber());
+            }
+            flights.add(actual);
+        }
+        return flights;
+    }
+
+    private void validateItinerary(
+            List<FlightOffer> flights,
+            int passengers,
+            Map<String, Integer> connectionMinutes
+    ) {
+        for (FlightOffer flight : flights) {
+            if (!flight.arrivalTime().isAfter(flight.departureTime())) {
+                throw new BookingException("航班到达时间必须晚于起飞时间：" + flight.flightNumber());
+            }
+            if (flight.availableSeats() < passengers) {
+                throw new BookingException("余座不足：" + flight.flightNumber());
+            }
+        }
+        if (flights.size() != 2) {
+            return;
+        }
+        FlightOffer first = flights.get(0);
+        FlightOffer second = flights.get(1);
+        if (!first.destination().equals(second.origin())) {
+            throw new BookingException("联程航段不连续：" + first.destination() + " / " + second.origin());
+        }
+        if (!second.departureTime().isAfter(first.arrivalTime())) {
+            throw new BookingException("后段起飞时间必须晚于前段到达时间");
+        }
+        long connection = Duration.between(first.arrivalTime(), second.departureTime()).toMinutes();
+        Integer minimum = connectionMinutes == null ? null : connectionMinutes.get(first.destination());
+        if (minimum == null) {
+            throw new BookingException("未配置中转机场最短衔接时间：" + first.destination());
+        }
+        if (connection < minimum) {
+            throw new BookingException("中转时间不足：需要 " + minimum + " 分钟，当前 " + connection + " 分钟");
         }
     }
 
@@ -166,15 +266,34 @@ public class BookingCoordinator {
         return pricePerPassenger.multiply(BigDecimal.valueOf(passengers)).setScale(2, RoundingMode.HALF_UP);
     }
 
-    private void compensate(List<HoldContext> holds) {
+    private List<String> compensate(List<HoldContext> holds) {
+        List<String> failures = new ArrayList<>();
         for (int i = holds.size() - 1; i >= 0; i--) {
             HoldContext context = holds.get(i);
-            try {
-                gateway.release(context.airline(), context.holdId());
-            } catch (RuntimeException ignored) {
-                // A failed compensation is retried by the airline hold expiry task.
+            RuntimeException last = null;
+            boolean released = false;
+            for (int attempt = 0; attempt < 3 && !released; attempt++) {
+                try {
+                    gateway.release(context.airline(), context.holdId());
+                    released = true;
+                } catch (RuntimeException exception) {
+                    last = exception;
+                    if (attempt < 2) {
+                        try {
+                            Thread.sleep(50L);
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        }
+                    }
+                }
+            }
+            if (!released) {
+                failures.add(context.airline().code() + " / " + context.holdId()
+                        + (last == null ? "" : "：" + last.getMessage()));
             }
         }
+        return failures;
     }
 
     private String newBookingReference() {

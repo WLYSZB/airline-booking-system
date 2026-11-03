@@ -101,6 +101,14 @@ public class BookingRepository {
         ).stream().findFirst().map(this::attachDetails);
     }
 
+    public List<String> findReferencesByStatus(BookingStatus status) {
+        return jdbc.query(
+                "SELECT booking_reference FROM central_booking WHERE status = ? ORDER BY updated_at",
+                (rs, rowNum) -> rs.getString("booking_reference"),
+                status.name()
+        );
+    }
+
     @Transactional
     public void updateStatus(String bookingReference, BookingStatus status, String message) {
         int updated = jdbc.update("""

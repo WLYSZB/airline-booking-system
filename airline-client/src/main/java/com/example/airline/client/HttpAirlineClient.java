@@ -49,6 +49,12 @@ public class HttpAirlineClient implements AirlineGateway {
     }
 
     @Override
+    public FlightOffer flight(AirlineInfo airline, String flightInstanceId) {
+        String path = "/api/airline/" + encode(airline.code()) + "/flights/" + encode(flightInstanceId);
+        return send(request(airline, path).GET().build(), FlightOffer.class);
+    }
+
+    @Override
     public HoldResponse hold(AirlineInfo airline, HoldRequest request) {
         String path = "/api/airline/" + encode(airline.code()) + "/holds";
         return send(jsonRequest(airline, path, request), HoldResponse.class);

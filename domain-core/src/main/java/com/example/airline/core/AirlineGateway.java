@@ -13,6 +13,8 @@ import java.util.List;
 public interface AirlineGateway {
     List<FlightOffer> search(AirlineInfo airline, String origin, String destination, LocalDate date, int passengers);
 
+    FlightOffer flight(AirlineInfo airline, String flightInstanceId);
+
     HoldResponse hold(AirlineInfo airline, HoldRequest request);
 
     HoldResponse confirm(AirlineInfo airline, String holdId);

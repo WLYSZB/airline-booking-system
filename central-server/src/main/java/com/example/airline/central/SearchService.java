@@ -71,9 +71,9 @@ public class SearchService {
 
     private void validate(SearchCriteria criteria) {
         if (criteria == null || blank(criteria.origin()) || blank(criteria.destination())
-                || criteria.date() == null || criteria.passengers() < 1) {
+                || criteria.date() == null || criteria.passengers() < 1 || criteria.passengers() > 6) {
             throw new CentralServiceException(HttpStatus.BAD_REQUEST, "INVALID_SEARCH",
-                    "出发地、目的地、日期和乘客人数必须有效");
+                    "出发地、目的地、日期和 1-6 名乘客必须有效");
         }
         if (criteria.origin().equalsIgnoreCase(criteria.destination())) {
             throw new CentralServiceException(HttpStatus.BAD_REQUEST, "SAME_AIRPORT",

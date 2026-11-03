@@ -94,7 +94,9 @@ public class ThickBookingService {
                 passengers,
                 "THICK-" + UUID.randomUUID()
         );
-        Receipt receipt = bookingCoordinator.coordinate(request, airlines);
+        Map<String, Integer> connectionMinutes = centralClient.airports().stream()
+                .collect(Collectors.toMap(AirportInfo::code, AirportInfo::minConnectionMinutes));
+        Receipt receipt = bookingCoordinator.coordinate(request, airlines, connectionMinutes);
         RegisterBookingRequest registration = new RegisterBookingRequest(
                 receipt.bookingReference(),
                 receipt.passengers()
@@ -123,6 +125,11 @@ public class ThickBookingService {
         List<String> failures = bookingCoordinator.cancel(
                 bookingReference, existing.legs(), centralClient.airlines());
         if (!failures.isEmpty()) {
+            try {
+                centralClient.markCancelled(bookingReference);
+            } catch (RuntimeException ignored) {
+                // 中央会记录 CANCEL_PENDING，后台任务继续重试。
+            }
             throw new IllegalStateException("部分航段取消失败：" + String.join("; ", failures));
         }
         return centralClient.markCancelled(bookingReference);

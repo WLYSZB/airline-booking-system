@@ -39,35 +39,87 @@ public class AirlineRepository {
                                origin, destination, departure_time, arrival_time, fare,
                                available_seats, own_discount
                           FROM flight_instance
-                         WHERE (origin = ? OR destination = ?)
+                         WHERE airline_code = ?
+                           AND (origin = ? OR destination = ?)
                            AND departure_time >= ?
                            AND departure_time < ?
                            AND available_seats >= ?
                          ORDER BY departure_time, fare
                         """,
                 this::mapFlight,
-                origin, destination, start, end, passengers);
+                properties.getCode(), origin, destination, start, end, passengers);
+    }
+
+    public FlightOffer flight(String flightInstanceId) {
+        return jdbc.query("""
+                        SELECT flight_instance_id, airline_code, airline_name, flight_number,
+                               origin, destination, departure_time, arrival_time, fare,
+                               available_seats, own_discount
+                          FROM flight_instance
+                         WHERE flight_instance_id = ? AND airline_code = ?
+                        """,
+                this::mapFlight,
+                flightInstanceId, properties.getCode()
+        ).stream().findFirst().orElseThrow(() -> new AirlineServiceException(
+                HttpStatus.NOT_FOUND, "FLIGHT_NOT_FOUND", "航班不存在：" + flightInstanceId));
     }
 
     @Transactional
     public HoldResponse hold(HoldRequest request, LocalDateTime now) {
-        if (request.passengers() < 1) {
-            throw new AirlineServiceException(HttpStatus.BAD_REQUEST, "INVALID_PASSENGERS", "乘客人数必须大于 0");
+        if (request.passengers() < 1 || request.passengers() > 6) {
+            throw new AirlineServiceException(HttpStatus.BAD_REQUEST, "INVALID_PASSENGERS", "乘客人数必须在 1 到 6 之间");
         }
         Optional<HoldRow> existing = findByIdempotencyKey(request.idempotencyKey());
         if (existing.isPresent()) {
             HoldRow row = existing.get();
-            if (!row.bookingReference().equals(request.bookingReference())) {
+            if (!row.bookingReference().equals(request.bookingReference())
+                    || !row.flightInstanceId().equals(request.flightInstanceId())
+                    || row.passengers() != request.passengers()) {
                 throw new AirlineServiceException(HttpStatus.CONFLICT, "IDEMPOTENCY_CONFLICT",
                         "幂等键已被其他预订使用");
+            }
+            if ("HELD".equals(row.status()) && !row.expiresAt().isAfter(now)) {
+                releaseInternal(row);
+                throw new AirlineServiceException(HttpStatus.CONFLICT, "HOLD_EXPIRED",
+                        "预占已过期，请重新查询");
+            }
+            if ("CANCELLED".equals(row.status())) {
+                int seats = jdbc.update("""
+                                UPDATE flight_instance
+                                   SET available_seats = available_seats - ?
+                                 WHERE flight_instance_id = ? AND airline_code = ? AND available_seats >= ?
+                                """,
+                        request.passengers(), request.flightInstanceId(),
+                        properties.getCode(), request.passengers());
+                if (seats != 1) {
+                    throw new AirlineServiceException(HttpStatus.CONFLICT, "SEATS_UNAVAILABLE",
+                            "余座不足，无法重新预占 " + request.passengers() + " 个座位");
+                }
+                int restored = jdbc.update("""
+                                UPDATE flight_hold
+                                   SET status = 'HELD', created_at = ?, expires_at = ?
+                                 WHERE hold_id = ? AND status = 'CANCELLED'
+                                """,
+                        now, now.plusMinutes(properties.getHoldMinutes()), row.holdId());
+                if (restored != 1) {
+                    jdbc.update("""
+                                    UPDATE flight_instance
+                                       SET available_seats = available_seats + ?
+                                     WHERE flight_instance_id = ?
+                                    """,
+                            request.passengers(), request.flightInstanceId());
+                    throw new AirlineServiceException(HttpStatus.CONFLICT, "HOLD_STATE_CHANGED",
+                            "预占状态已变化");
+                }
+                return new HoldResponse(row.holdId(), "HELD", row.fare(), request.passengers());
             }
             return new HoldResponse(row.holdId(), row.status(), row.fare(), row.passengers());
         }
 
         Optional<BigDecimal> fare = jdbc.query(
-                "SELECT fare FROM flight_instance WHERE flight_instance_id = ?",
+                "SELECT fare FROM flight_instance WHERE flight_instance_id = ? AND airline_code = ?",
                 (rs, rowNum) -> rs.getBigDecimal("fare"),
-                request.flightInstanceId()
+                request.flightInstanceId(), properties.getCode()
         ).stream().findFirst();
         if (fare.isEmpty()) {
             throw new AirlineServiceException(HttpStatus.NOT_FOUND, "FLIGHT_NOT_FOUND",
@@ -77,10 +129,10 @@ public class AirlineRepository {
         int updated = jdbc.update("""
                         UPDATE flight_instance
                            SET available_seats = available_seats - ?
-                         WHERE flight_instance_id = ?
+                         WHERE flight_instance_id = ? AND airline_code = ?
                            AND available_seats >= ?
                         """,
-                request.passengers(), request.flightInstanceId(), request.passengers());
+                request.passengers(), request.flightInstanceId(), properties.getCode(), request.passengers());
         if (updated != 1) {
             throw new AirlineServiceException(HttpStatus.CONFLICT, "SEATS_UNAVAILABLE",
                     "余座不足，无法预占 " + request.passengers() + " 个座位");
@@ -114,10 +166,19 @@ public class AirlineRepository {
         if ("CANCELLED".equals(row.status())) {
             throw new AirlineServiceException(HttpStatus.CONFLICT, "HOLD_CANCELLED", "该预占已取消");
         }
-        int updated = jdbc.update(
-                "UPDATE flight_hold SET status = 'CONFIRMED' WHERE hold_id = ? AND status = 'HELD'",
-                holdId);
+        LocalDateTime now = LocalDateTime.now();
+        if (!row.expiresAt().isAfter(now)) {
+            releaseInternal(row);
+            throw new AirlineServiceException(HttpStatus.CONFLICT, "HOLD_EXPIRED",
+                    "预占已过期，请重新查询");
+        }
+        int updated = jdbc.update("""
+                        UPDATE flight_hold SET status = 'CONFIRMED'
+                         WHERE hold_id = ? AND status = 'HELD' AND expires_at > ?
+                        """,
+                holdId, now);
         if (updated != 1) {
+            releaseInternal(row);
             throw new AirlineServiceException(HttpStatus.CONFLICT, "HOLD_STATE_CHANGED", "预占状态已变化");
         }
         return new HoldResponse(row.holdId(), "CONFIRMED", row.fare(), row.passengers());
@@ -133,7 +194,7 @@ public class AirlineRepository {
     public void cancelBooking(String bookingReference) {
         List<HoldRow> rows = jdbc.query("""
                         SELECT h.hold_id, h.booking_reference, h.flight_instance_id, h.passengers,
-                               h.status, f.fare
+                               h.status, h.expires_at, f.fare
                           FROM flight_hold h
                           JOIN flight_instance f ON f.flight_instance_id = h.flight_instance_id
                          WHERE h.booking_reference = ?
@@ -201,7 +262,7 @@ public class AirlineRepository {
     public int releaseExpired(LocalDateTime now) {
         List<HoldRow> expired = jdbc.query("""
                         SELECT h.hold_id, h.booking_reference, h.flight_instance_id, h.passengers,
-                               h.status, f.fare
+                               h.status, h.expires_at, f.fare
                           FROM flight_hold h
                           JOIN flight_instance f ON f.flight_instance_id = h.flight_instance_id
                          WHERE h.status = 'HELD' AND h.expires_at < ?
@@ -236,7 +297,7 @@ public class AirlineRepository {
     private HoldRow requireHold(String holdId) {
         return jdbc.query("""
                         SELECT h.hold_id, h.booking_reference, h.flight_instance_id, h.passengers,
-                               h.status, f.fare
+                               h.status, h.expires_at, f.fare
                           FROM flight_hold h
                           JOIN flight_instance f ON f.flight_instance_id = h.flight_instance_id
                          WHERE h.hold_id = ?
@@ -253,7 +314,7 @@ public class AirlineRepository {
         }
         return jdbc.query("""
                         SELECT h.hold_id, h.booking_reference, h.flight_instance_id, h.passengers,
-                               h.status, f.fare
+                               h.status, h.expires_at, f.fare
                           FROM flight_hold h
                           JOIN flight_instance f ON f.flight_instance_id = h.flight_instance_id
                          WHERE h.idempotency_key = ?
@@ -286,6 +347,7 @@ public class AirlineRepository {
                 rs.getString("flight_instance_id"),
                 rs.getInt("passengers"),
                 rs.getString("status"),
+                rs.getTimestamp("expires_at").toLocalDateTime(),
                 rs.getBigDecimal("fare")
         );
     }
@@ -296,6 +358,7 @@ public class AirlineRepository {
             String flightInstanceId,
             int passengers,
             String status,
+            LocalDateTime expiresAt,
             BigDecimal fare
     ) {
     }

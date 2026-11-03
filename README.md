@@ -122,6 +122,9 @@ Oracle  localhost:1521/FREEPDB1   airline_c
 中央库  MySQL: airline_central
 ```
 
+新机器首次配置建库、账号、端口和 Oracle PDB，见
+[`docs/real-database-setup.md`](docs/real-database-setup.md)。
+
 密码不写入仓库。直接运行脚本，脚本会用隐藏输入提示密码：
 
 ```bash
@@ -167,10 +170,13 @@ python3 scripts/architecture_check.py
 已实际执行并通过（真实数据库）：
 
 - MySQL：A/B 航司库和中央库，端口 3308；Oracle：C 航司库，`FREEPDB1`。
-- `domain-core`：5 个规则测试通过。
+- `domain-core`：9 个规则测试通过（5 个行程组合 + 4 个预订校验）。
 - V1 冒烟：跨航司 `B2102 → A1104` 两人预订成功，票价按“单人 ¥850.00 × 2 人”计算为 `1700.00`，每位乘客分别保存 `AISLE` / `WINDOW`，重复提交返回同一 `bookingReference`，扣座 `[4,6] → [2,4]`，取消后回补 `[4,6]`。
 - V2 Java 厚客户端冒烟：客户端组合 `BB2102 → AA1104`，直连航司确认，中央按航司权威明细登记 `CONFIRMED`，保留 `WINDOW` / `AISLE` 两种乘客偏好，客户端协调取消 `CANCELLED`。
 - 排序：`DEPARTURE` 返回按首段出发时间升序，首条 `07:30`。
+- 预订前重新读取航司航班，校验航段连续、最短中转、人数和航班归属。
+- 幂等：同 key 重试返回同一收据；同 key 改内容返回 `IDEMPOTENCY_CONFLICT`；并发同 key 只有一条进入执行。
+- 过期预占确认返回 `HOLD_EXPIRED`；`CANCEL_PENDING` 由中央后台任务自动重试收口。
 - 并发抢座：两名乘客同时对 C3101 发起 2 人预订，1 成功、1 返回 `SEATS_UNAVAILABLE`，取消后余座恢复为 3。
 - 账号隔离：`airline_a` 连接 `airline_b` 被 MySQL 以 `Access denied` 拒绝。
 - 持久化：中央服务重启后，MySQL 中的既有收据仍可查询。
@@ -180,8 +186,10 @@ python3 scripts/architecture_check.py
 
 ## 8. 明确未完成 / 限制
 
-1. Oracle 库中的表在本轮联调前已经存在，因此本轮没有从空库重新执行 Oracle DDL；应用对 Oracle 表完成了查询、预占、扣座和取消验证。MySQL A/B/Central 表由应用启动脚本建表并验证。
+1. Oracle 库中的表在本轮联调前已经存在；空库建表仍需按 `docs/real-database-setup.md` 首次初始化。
 2. 未实现真实支付、出票、退票费用、代码共享、复杂运价和第三方航司接口。
-3. 未实现用户注册、JWT/SSO 和权限系统；ATAM 中列为安全治理待办。
+3. 未实现用户注册、JWT/SSO 和权限系统；知道预订编号仍可查询/取消，公网部署前必须补授权。
 4. 演示数据只有 `2026-11-15` 一天，其他日期会返回空结果。
-5. Swing 界面已编译，V2 业务通过无界面 smoke 类验证；尚未做人工视觉验收和 GUI 自动化测试。
+5. 预订失败后的补偿会立即重试 3 次，但还没有独立的持久化补偿队列；连续失败时仍需要人工或后续任务对账。
+6. 幂等占位表按单实例设计；多实例部署还需要数据库行锁或分布式锁。
+7. Swing 界面已编译，V2 业务通过无界面 smoke 类验证；尚未做人工视觉验收和 GUI 自动化测试。

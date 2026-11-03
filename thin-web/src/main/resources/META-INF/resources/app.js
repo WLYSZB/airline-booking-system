@@ -3,6 +3,9 @@ const state = {
   selectedTrip: null,
   airlines: [],
   airports: new Map(),
+  lastCriteria: null,
+  searchSequence: 0,
+  bookingKey: null,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -29,13 +32,59 @@ function hideStatus() {
   statusBox.className = 'status hidden';
 }
 
+function currentCriteria() {
+  return {
+    origin: $('#origin').value,
+    destination: $('#destination').value,
+    date: $('#date').value,
+    passengers: Number($('#passengers').value),
+    airlineCodes: [...document.querySelectorAll('#airline-options input:checked')].map((item) => item.value),
+    sortMode: $('#sort-mode').value,
+  };
+}
+
+function sameCriteria(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function showBookingError(message) {
+  const errorBox = $('#booking-error');
+  errorBox.textContent = message;
+  errorBox.classList.remove('hidden');
+}
+
+function hideBookingError() {
+  const errorBox = $('#booking-error');
+  errorBox.textContent = '';
+  errorBox.classList.add('hidden');
+}
+
 async function api(path, options = {}) {
-  const response = await fetch(path, {
-    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
-    ...options,
-  });
+  const { timeout = 15000, ...fetchOptions } = options;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeout);
+  let response;
+  try {
+    response = await fetch(path, {
+      ...fetchOptions,
+      headers: { 'Content-Type': 'application/json', ...(fetchOptions.headers || {}) },
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      throw new Error('请求超时，请稍后重试');
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
   const text = await response.text();
-  const data = text ? JSON.parse(text) : null;
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    throw new Error(`服务返回了无法解析的响应 (${response.status})`);
+  }
   if (!response.ok) {
     throw new Error(data?.message || `请求失败 (${response.status})`);
   }
@@ -147,44 +196,63 @@ function renderTrips(payload) {
 async function onSearch(event) {
   event.preventDefault();
   hideStatus();
+  const criteria = currentCriteria();
+  if (!criteria.airlineCodes.length) {
+    showStatus('请至少选择一家航空公司。', 'warn');
+    return;
+  }
   const button = event.submitter || $('#search-form button[type="submit"]');
   button.disabled = true;
   button.textContent = '查询中…';
+  const sequence = ++state.searchSequence;
+  state.lastCriteria = criteria;
   try {
-    const criteria = {
-      origin: $('#origin').value,
-      destination: $('#destination').value,
-      date: $('#date').value,
-      passengers: Number($('#passengers').value),
-      airlineCodes: [...document.querySelectorAll('#airline-options input:checked')].map((item) => item.value),
-      sortMode: $('#sort-mode').value,
-    };
     const payload = await api('/api/search', { method: 'POST', body: JSON.stringify(criteria) });
+    if (sequence !== state.searchSequence) return;
     renderTrips(payload);
   } catch (error) {
+    if (sequence !== state.searchSequence) return;
     results.className = 'results-empty';
     results.innerHTML = `<div class="empty-mark">!</div><p>查询失败，请检查服务状态。</p>`;
     showStatus(error.message, 'error');
   } finally {
-    button.disabled = false;
-    button.textContent = '查询行程';
+    if (sequence === state.searchSequence) {
+      button.disabled = false;
+      button.textContent = '查询行程';
+    }
   }
 }
 
 function openBooking(index) {
-  state.selectedTrip = state.trips[index];
-  const trip = state.selectedTrip;
-  const passengerCount = Number($('#passengers').value);
+  if (!state.lastCriteria || !sameCriteria(currentCriteria(), state.lastCriteria)) {
+    showStatus('查询条件已改变，请重新查询后再预订。', 'warn');
+    return;
+  }
+  const trip = state.trips[index];
+  const passengerCount = currentCriteria().passengers;
+  if (trip.passengers !== passengerCount) {
+    showStatus('乘客人数与当前查询结果不一致，请重新查询。', 'warn');
+    return;
+  }
+  state.selectedTrip = trip;
+  state.bookingKey = null;
+  hideBookingError();
   $('#selected-trip').textContent =
     `${tripRoute(trip)} · ${tripAirlines(trip)} · 单人 ${moneyText(trip.pricePerPassenger)} × ${trip.passengers} 人`
     + ` = ${moneyText(trip.totalPrice)} · ${trip.pricingNote}`;
   $('#passenger-fields').innerHTML = Array.from({ length: passengerCount }, (_, index) => `
     <div class="passenger-row">
       <span class="passenger-index">乘客 ${index + 1}</span>
-      <label>姓名<input class="passenger-name" data-index="${index}" placeholder="与证件一致" required></label>
-      <label>护照号<input class="passenger-passport" data-index="${index}" placeholder="E12345678" required></label>
-      <label>座位偏好
-        <select class="passenger-seat">
+      <label for="passenger-${index}-name">姓名
+        <input id="passenger-${index}-name" name="passengerName" class="passenger-name"
+               data-index="${index}" autocomplete="name" placeholder="与证件一致" required>
+      </label>
+      <label for="passenger-${index}-passport">护照号
+        <input id="passenger-${index}-passport" name="passportNumber" class="passenger-passport"
+               data-index="${index}" autocomplete="off" placeholder="E12345678" required>
+      </label>
+      <label for="passenger-${index}-seat">座位偏好
+        <select id="passenger-${index}-seat" name="seatPreference" class="passenger-seat">
           <option value="WINDOW">靠窗 Window</option>
           <option value="AISLE">靠过道 Aisle</option>
           <option value="MIDDLE">中间 Middle</option>
@@ -195,37 +263,57 @@ function openBooking(index) {
   bookingDialog.showModal();
 }
 
+async function refreshTrips() {
+  if (!state.lastCriteria) return;
+  const sequence = state.searchSequence;
+  try {
+    const payload = await api('/api/search', {
+      method: 'POST',
+      body: JSON.stringify(state.lastCriteria),
+    });
+    if (sequence === state.searchSequence) {
+      renderTrips(payload);
+    }
+  } catch {
+    // 刷新失败不覆盖刚生成的收据，下一次查询会重新同步。
+  }
+}
+
 async function submitBooking(event) {
   event.preventDefault();
   if (!state.selectedTrip) return;
+  hideBookingError();
   const passengers = [...document.querySelectorAll('.passenger-row')].map((row) => ({
     name: row.querySelector('.passenger-name').value.trim(),
     passportNumber: row.querySelector('.passenger-passport').value.trim(),
     seatPreference: row.querySelector('.passenger-seat').value,
   }));
   if (passengers.some((p) => !p.name || !p.passportNumber || !p.seatPreference)) {
-    showStatus('请完整填写每位乘客的姓名、护照号和座位偏好。', 'error');
+    showBookingError('请完整填写每位乘客的姓名、护照号和座位偏好。');
     return;
   }
   const submit = $('#submit-booking');
   submit.disabled = true;
   submit.textContent = '提交中…';
+  state.bookingKey = state.bookingKey || crypto.randomUUID();
   try {
     const receipt = await api('/api/bookings', {
       method: 'POST',
       body: JSON.stringify({
         trip: state.selectedTrip,
         passengers,
-        idempotencyKey: crypto.randomUUID(),
+        idempotencyKey: state.bookingKey,
       }),
     });
+    state.bookingKey = null;
     bookingDialog.close();
     renderReceipt(receipt);
     $('#receipt-reference').value = receipt.bookingReference;
+    await refreshTrips();
     showStatus(`预订成功：${receipt.bookingReference}`, 'info');
     document.querySelector('.receipt-panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
   } catch (error) {
-    showStatus(`预订失败：${error.message}`, 'error');
+    showBookingError(`预订失败：${error.message}`);
   } finally {
     submit.disabled = false;
     submit.textContent = '确认预订';
@@ -279,11 +367,17 @@ async function lookupReceipt() {
     showStatus('请输入预订编号。', 'warn');
     return;
   }
+  const button = $('#lookup-button');
+  button.disabled = true;
+  button.textContent = '查询中…';
   try {
     renderReceipt(await api(`/api/bookings/${encodeURIComponent(reference)}`));
     hideStatus();
   } catch (error) {
     showStatus(error.message, 'error');
+  } finally {
+    button.disabled = false;
+    button.textContent = '查询收据';
   }
 }
 
@@ -296,20 +390,33 @@ async function cancelBooking() {
   if (!window.confirm(`确认取消 ${reference}？`)) return;
   const button = $('#cancel-button');
   button.disabled = true;
+  button.textContent = '取消中…';
   try {
     renderReceipt(await api(`/api/bookings/${encodeURIComponent(reference)}/cancel`, { method: 'POST' }));
+    await refreshTrips();
     showStatus('预订已取消，库存已回补。', 'info');
   } catch (error) {
     showStatus(`取消失败：${error.message}`, 'error');
   } finally {
     button.disabled = false;
+    button.textContent = '取消预订';
   }
+}
+
+function closeBookingDialog() {
+  state.bookingKey = null;
+  hideBookingError();
+  bookingDialog.close();
 }
 
 $('#search-form').addEventListener('submit', onSearch);
 $('#booking-form').addEventListener('submit', submitBooking);
-$('#close-dialog').addEventListener('click', () => bookingDialog.close());
-$('#cancel-dialog').addEventListener('click', () => bookingDialog.close());
+$('#close-dialog').addEventListener('click', closeBookingDialog);
+$('#cancel-dialog').addEventListener('click', closeBookingDialog);
+bookingDialog.addEventListener('close', () => {
+  state.bookingKey = null;
+  hideBookingError();
+});
 $('#lookup-button').addEventListener('click', lookupReceipt);
 $('#cancel-button').addEventListener('click', cancelBooking);
 loadRegistry();

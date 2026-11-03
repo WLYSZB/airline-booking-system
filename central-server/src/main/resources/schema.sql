@@ -12,6 +12,15 @@ CREATE TABLE IF NOT EXISTS central_booking (
     CONSTRAINT uq_booking_idempotency UNIQUE (idempotency_key)
 );
 
+CREATE TABLE IF NOT EXISTS booking_idempotency (
+    idempotency_key VARCHAR(200) PRIMARY KEY,
+    request_fingerprint VARCHAR(64) NOT NULL,
+    state VARCHAR(16) NOT NULL,
+    booking_reference VARCHAR(36),
+    created_at VARCHAR(40) NOT NULL,
+    updated_at VARCHAR(40) NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS booking_leg (
     booking_reference VARCHAR(36) NOT NULL,
     leg_no INT NOT NULL,
