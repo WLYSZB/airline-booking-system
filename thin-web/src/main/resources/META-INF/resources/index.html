@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>云翼机票 · Thin Web Client</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <div class="brand-mark">云翼</div>
+    <div>
+      <h1>在线机票预订</h1>
+      <p>Three airlines · one journey</p>
+    </div>
+  </div>
+  <div class="arch-badge">
+    <span class="dot"></span>
+    Thin Web Client · 业务逻辑位于服务端
+  </div>
+</header>
+
+<main class="shell">
+  <section class="hero">
+    <div class="hero-copy">
+      <p class="eyebrow">MULTI-AIRLINE ITINERARY</p>
+      <h2>一次搜索，串起三家航司</h2>
+      <p class="lead">自动校验中转时间、余座与同航司折扣。跨航司联程由服务端统一组合。</p>
+    </div>
+    <div class="hero-metrics">
+      <div><strong>3</strong><span>航空公司</span></div>
+      <div><strong>1</strong><span>次预订</span></div>
+      <div><strong>0</strong><span>浏览器业务规则</span></div>
+    </div>
+  </section>
+
+  <section class="panel search-panel">
+    <div class="panel-heading">
+      <div>
+        <p class="eyebrow">SEARCH</p>
+        <h3>查询行程</h3>
+      </div>
+      <p class="panel-note">演示航班日期：2026-11-15</p>
+    </div>
+    <form id="search-form" class="search-form">
+      <label>出发城市
+        <select id="origin" required>
+          <option value="WUH">武汉 WUH</option>
+          <option value="PEK">北京 PEK</option>
+          <option value="PVG">上海 PVG</option>
+          <option value="CAN">广州 CAN</option>
+          <option value="CTU">成都 CTU</option>
+        </select>
+      </label>
+      <label>目的城市
+        <select id="destination" required>
+          <option value="PEK">北京 PEK</option>
+          <option value="WUH">武汉 WUH</option>
+          <option value="PVG">上海 PVG</option>
+          <option value="CAN">广州 CAN</option>
+          <option value="CTU">成都 CTU</option>
+        </select>
+      </label>
+      <label>出发日期
+        <input id="date" type="date" value="2026-11-15" required>
+      </label>
+      <label>乘客人数
+        <input id="passengers" type="number" min="1" max="6" value="1" required>
+      </label>
+      <label>排序方式
+        <select id="sort-mode">
+          <option value="PRICE">价格优先</option>
+          <option value="TIME">总时长优先</option>
+          <option value="DEPARTURE">出发时间最早</option>
+        </select>
+      </label>
+      <div class="airline-filter">
+        <span>航空公司</span>
+        <div id="airline-options" class="airline-options"></div>
+      </div>
+      <button class="primary-action" type="submit">查询行程</button>
+    </form>
+  </section>
+
+  <section id="status" class="status hidden" role="status"></section>
+
+  <section class="panel results-panel">
+    <div class="panel-heading">
+      <div>
+        <p class="eyebrow">RESULTS</p>
+        <h3>可选行程</h3>
+      </div>
+      <p id="result-summary" class="panel-note">尚未查询</p>
+    </div>
+    <div id="results" class="results-empty">
+      <div class="empty-mark">✈</div>
+      <p>输入城市和日期，查询跨航司行程。</p>
+    </div>
+  </section>
+
+  <section class="panel receipt-panel">
+    <div class="panel-heading">
+      <div>
+        <p class="eyebrow">RECEIPT & CANCELLATION</p>
+        <h3>取票与取消</h3>
+      </div>
+    </div>
+    <div class="receipt-actions">
+      <label>预订编号
+        <input id="receipt-reference" placeholder="BKXXXXXXXXXX">
+      </label>
+      <button id="lookup-button" class="secondary-action" type="button">查询收据</button>
+      <button id="cancel-button" class="danger-action" type="button">取消预订</button>
+    </div>
+    <div id="receipt" class="receipt hidden"></div>
+  </section>
+</main>
+
+<dialog id="booking-dialog">
+  <form method="dialog" id="booking-form">
+    <div class="dialog-heading">
+      <div>
+        <p class="eyebrow">BOOK</p>
+        <h3>填写乘客与个人座位偏好</h3>
+      </div>
+      <button type="button" class="icon-button" id="close-dialog" aria-label="关闭">×</button>
+    </div>
+    <div id="selected-trip" class="selected-trip"></div>
+    <div id="passenger-fields" class="passenger-fields"></div>
+    <div class="dialog-actions">
+      <button type="button" class="secondary-action" id="cancel-dialog">取消</button>
+      <button type="submit" class="primary-action" id="submit-booking">确认预订</button>
+    </div>
+  </form>
+</dialog>
+
+<footer>
+  <span>软件体系结构 · 第二部分团队实验</span>
+  <span>浏览器不包含联程、价格、折扣或预订协调规则</span>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>

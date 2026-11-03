@@ -1,0 +1,12 @@
+spring:
+  config:
+    activate:
+      on-profile: oracle
+  datasource:
+    url: ${CENTRAL_DB_URL}
+    username: ${CENTRAL_DB_USER}
+    password: ${CENTRAL_DB_PASSWORD}
+    driver-class-name: oracle.jdbc.OracleDriver
+  sql:
+    init:
+      mode: never

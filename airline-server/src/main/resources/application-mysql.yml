@@ -1,0 +1,12 @@
+spring:
+  config:
+    activate:
+      on-profile: mysql
+  datasource:
+    url: ${AIRLINE_DB_URL}
+    username: ${AIRLINE_DB_USER}
+    password: ${AIRLINE_DB_PASSWORD}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  sql:
+    init:
+      mode: never

@@ -1,0 +1,31 @@
+server:
+  port: ${SERVER_PORT:8081}
+
+spring:
+  application:
+    name: airline-server
+  datasource:
+    url: ${AIRLINE_DB_URL:jdbc:h2:mem:airlineA;MODE=PostgreSQL;DB_CLOSE_DELAY=-1}
+    username: ${AIRLINE_DB_USER:sa}
+    password: ${AIRLINE_DB_PASSWORD:}
+    hikari:
+      maximum-pool-size: 8
+  sql:
+    init:
+      mode: always
+      encoding: UTF-8
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+
+airline:
+  code: ${AIRLINE_CODE:A}
+  name: ${AIRLINE_NAME:楚天航空}
+  own-discount: ${AIRLINE_DISCOUNT:10}
+  hold-minutes: 15
+  seed-date: 2026-11-15
+  expiry-scan-ms: 30000
+
+logging:
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%X{requestId:-}] %logger{36} - %msg%n"

@@ -1,0 +1,14 @@
+target/
+runtime/
+logs/
+working/
+.idea/
+*.iml
+.vscode/
+.DS_Store
+*.log
+
+# Local secrets
+.env
+.env.*
+!.env.example

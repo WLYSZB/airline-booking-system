@@ -1,0 +1,12 @@
+spring:
+  config:
+    activate:
+      on-profile: mysql
+  datasource:
+    url: ${CENTRAL_DB_URL}
+    username: ${CENTRAL_DB_USER}
+    password: ${CENTRAL_DB_PASSWORD}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  sql:
+    init:
+      mode: never

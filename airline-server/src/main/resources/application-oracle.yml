@@ -1,0 +1,12 @@
+spring:
+  config:
+    activate:
+      on-profile: oracle
+  datasource:
+    url: ${AIRLINE_DB_URL}
+    username: ${AIRLINE_DB_USER}
+    password: ${AIRLINE_DB_PASSWORD}
+    driver-class-name: oracle.jdbc.OracleDriver
+  sql:
+    init:
+      mode: never

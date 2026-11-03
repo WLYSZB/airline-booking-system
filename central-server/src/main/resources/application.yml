@@ -1,0 +1,60 @@
+server:
+  port: ${SERVER_PORT:8080}
+
+spring:
+  application:
+    name: central-booking-server
+  datasource:
+    url: ${CENTRAL_DB_URL:jdbc:h2:mem:central;MODE=PostgreSQL;DB_CLOSE_DELAY=-1}
+    username: ${CENTRAL_DB_USER:sa}
+    password: ${CENTRAL_DB_PASSWORD:}
+    hikari:
+      maximum-pool-size: 10
+  sql:
+    init:
+      mode: always
+      encoding: UTF-8
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+
+app:
+  http-timeout-ms: 4000
+  airlines:
+    - code: A
+      name: 楚天航空
+      own-discount-percent: 10
+      base-url: ${AIRLINE_A_URL:http://localhost:8081}
+    - code: B
+      name: 东湖航空
+      own-discount-percent: 8
+      base-url: ${AIRLINE_B_URL:http://localhost:8082}
+    - code: C
+      name: 长江航空
+      own-discount-percent: 12
+      base-url: ${AIRLINE_C_URL:http://localhost:8083}
+  airports:
+    - code: WUH
+      city: 武汉
+      country: 中国
+      min-connection-minutes: 60
+    - code: PEK
+      city: 北京
+      country: 中国
+      min-connection-minutes: 90
+    - code: PVG
+      city: 上海
+      country: 中国
+      min-connection-minutes: 60
+    - code: CAN
+      city: 广州
+      country: 中国
+      min-connection-minutes: 60
+    - code: CTU
+      city: 成都
+      country: 中国
+      min-connection-minutes: 80
+
+logging:
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%X{requestId:-}] %logger{36} - %msg%n"
